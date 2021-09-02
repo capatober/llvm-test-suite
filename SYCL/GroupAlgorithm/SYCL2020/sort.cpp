@@ -1,0 +1,256 @@
+// RUN: %clangxx -fsycl -fsycl-targets=%sycl_triple %s -I . -o %t.out
+// RUN: %CPU_RUN_PLACEHOLDER %t.out
+// RUN: %GPU_RUN_PLACEHOLDER %t.out
+// RUN: %ACC_RUN_PLACEHOLDER %t.out
+//
+// Missinsg __spirv_GroupIAdd, __spirv_GroupSMin and __spirv_GroupSMax on AMD:
+// XFAIL: rocm_amd
+
+// TODO: enable compile+runtime checks for operations defined in SPIR-V 1.3.
+// That requires either adding a switch to clang (-spirv-max-version=1.3) or
+// raising the spirv version from 1.1. to 1.3 for spirv translator
+// unconditionally. Using operators specific for spirv 1.3 and higher with
+// -spirv-max-version=1.1 being set by default causes assert/check fails
+// in spirv translator.
+// RUNx: %clangxx -fsycl -fsycl-targets=%sycl_triple -DSPIRV_1_3 %s -I . -o \
+   %t13.out
+
+#include "support.h"
+#include <CL/sycl.hpp>
+
+#include <algorithm>
+#include <iostream>
+#include <random>
+#include <vector>
+
+namespace my_sycl = sycl::ext::oneapi;
+
+auto async_handler_ = [](sycl::exception_list ex_list) {
+  for (auto &ex : ex_list) {
+    try {
+      std::rethrow_exception(ex);
+    } catch (sycl::exception &ex) {
+      std::cerr << ex.what() << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+};
+
+constexpr uint32_t items_per_work_item = 4;
+
+// we need it since using std::abs leads to compilation error
+template <typename T> T my_abs(T x) { return x >= 0 ? x : -x; }
+
+template <typename T>
+bool verify(T *expected, T *got, std::size_t n, float epsilon) {
+  for (std::size_t i = 0; i < n; ++i) {
+    if ((my_abs(expected[i] - got[i])) > epsilon) {
+      std::cout << "ERROR!!! i = " << i << ", got = " << got[i]
+                << ", expected = " << expected[i] << std::endl;
+      return false;
+    }
+  }
+  return true;
+}
+
+template <typename... Args> class sort_over_group_kernel_name;
+template <typename... Args> class joint_sort_kernel_name;
+
+template <typename T, typename Compare>
+int test_sort_over_group(sycl::queue &q, std::size_t local,
+                         sycl::buffer<T> &bufI1, Compare comp, int test_case) {
+  auto n = bufI1.size();
+  if (n > local)
+    return -1;
+
+  sycl::range<1> local_range(local);
+
+  std::size_t local_memory_size{};
+  switch (test_case) {
+  case 0:
+    local_memory_size =
+        my_sycl::experimental::default_sorter<>::memory_required<T>(
+            sycl::memory_scope::work_group, local_range);
+    break;
+  }
+  if (local_memory_size >
+      q.get_device().template get_info<sycl::info::device::local_mem_size>())
+    std::cout << "local_memory_size = " << local_memory_size << ", available = "
+              << q.get_device()
+                     .template get_info<sycl::info::device::local_mem_size>()
+              << std::endl;
+  q.submit([&](sycl::handler &h) {
+     auto aI1 = sycl::accessor(bufI1, h);
+     sycl::accessor<std::uint8_t, 1, sycl::access_mode::read_write,
+                    sycl::access::target::local>
+         scratch({local_memory_size}, h);
+
+     h.parallel_for<sort_over_group_kernel_name<T, Compare>>(
+         sycl::nd_range<1>(local_range, local_range), [=](sycl::nd_item<1> id) {
+           scratch[0] = std::uint8_t{};
+           auto local_id = id.get_local_id();
+           switch (test_case) {
+           case 0:
+             aI1[local_id] = my_sycl::sort_over_group(
+                 my_sycl::experimental::group_with_scratchpad(
+                     id.get_group(),
+                     sycl::span{&scratch[0], local_memory_size}),
+                 aI1[local_id], comp);
+             break;
+           }
+         });
+   }).wait();
+  return 1;
+}
+
+template <typename T, typename Compare>
+int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
+                    sycl::buffer<T> &bufI1, Compare comp, int test_case) {
+  auto n = bufI1.size();
+  auto n_groups = (n - 1) / n_items + 1;
+
+  std::size_t local_memory_size{};
+  switch (test_case) {
+  case 0:
+    local_memory_size =
+        my_sycl::experimental::default_sorter<>::memory_required<T>(
+            sycl::memory_scope::work_group, n);
+    break;
+  }
+  if (local_memory_size >
+      q.get_device().template get_info<sycl::info::device::local_mem_size>())
+    std::cout << "local_memory_size = " << local_memory_size << ", available = "
+              << q.get_device()
+                     .template get_info<sycl::info::device::local_mem_size>()
+              << std::endl;
+  q.submit([&](sycl::handler &h) {
+     auto aI1 = sycl::accessor(bufI1, h);
+     sycl::accessor<std::uint8_t, 1, sycl::access_mode::read_write,
+                    sycl::access::target::local>
+         scratch({local_memory_size}, h);
+
+     h.parallel_for<joint_sort_kernel_name<T, Compare>>(
+         sycl::nd_range<1>{{n_groups * local}, {local}},
+         [=](sycl::nd_item<1> id) {
+           auto group_id = id.get_group(0);
+           auto ptr_keys = &aI1[group_id * n_items];
+           // auto ptr = aI.get_pointer() + group_id * n_items;
+
+           scratch[0] = std::uint8_t{};
+           switch (test_case) {
+           case 0:
+             my_sycl::joint_sort(
+                 id.get_group(), ptr_keys,
+                 ptr_keys + sycl::min(n_items, n - group_id * n_items),
+                 my_sycl::experimental::default_sorter<Compare>(
+                     sycl::span{&scratch[0], local_memory_size}));
+             break;
+           }
+         });
+   }).wait_and_throw();
+  return n_groups;
+}
+
+template <typename T, typename Compare>
+void run_sort(sycl::queue &q, std::vector<T> &in, std::size_t size,
+              Compare comp, int test_case, int is_joint_sort) {
+  std::vector<T> in2(in.begin(), in.begin() + size);
+  std::vector<T> expected(in.begin(), in.begin() + size);
+  std::size_t local =
+      q.get_device()
+          .template get_info<sycl::info::device::max_work_group_size>();
+  local = std::min(local, size);
+  auto n_items = items_per_work_item * local;
+
+  int n_groups = 1;
+  { // scope to destruct buffers
+    sycl::buffer<T> bufKeys(in2.data(), size);
+    {
+      if (is_joint_sort)
+        n_groups = test_joint_sort(q, n_items, local, bufKeys, comp, test_case);
+      else
+        n_groups = test_sort_over_group(q, local, bufKeys, comp, test_case);
+      q.wait_and_throw();
+    }
+  }
+
+  // check results
+  for (int i_group = 0; i_group < n_groups; ++i_group) {
+    std::sort(expected.begin() + i_group * n_items,
+              expected.begin() + std::min((i_group + 1) * n_items, size), comp);
+  }
+  if (n_groups != -1 && !verify(expected.data(), in2.data(), size, 0.001f)) {
+    std::cerr << "Verification failed \n";
+    exit(1);
+  }
+}
+
+template <typename T> struct test_sort_cases {
+  template <typename Generator, typename Compare>
+  void operator()(sycl::queue &q, std::size_t dataSize, Compare comp,
+                  Generator generate) {
+    std::vector<T> stationaryData(dataSize);
+    // fill data
+    for (std::size_t i = 0; i < dataSize; ++i)
+      stationaryData[i] = generate(i);
+
+    // run test
+    for (int test_case = 0; test_case < 1; ++test_case) {
+      run_sort(q, stationaryData, dataSize, comp, test_case,
+               /*is_joint_sort*/ 1);
+      run_sort(q, stationaryData, dataSize, comp, test_case,
+               /*is_joint_sort*/ 0);
+    }
+  }
+};
+
+template <typename T, typename Compare>
+void test_sort_by_comp(sycl::queue &q, std::size_t dataSize) {
+  std::default_random_engine generator;
+  std::normal_distribution<float> distribution((10.0), (2.0));
+
+  T max_size = std::numeric_limits<T>::max();
+  std::size_t to_fill = dataSize;
+  if (dataSize > max_size)
+    to_fill = max_size;
+
+  // reversed order
+  test_sort_cases<T>()(q, to_fill, Compare{},
+                       [to_fill](std::size_t i) { return T(to_fill - i - 1); });
+  // filled by 1
+  test_sort_cases<T>()(q, dataSize, Compare{},
+                       [](std::size_t i) { return T(1); });
+  // random distribution
+  test_sort_cases<T>()(q, dataSize, Compare{},
+                       [&distribution, &generator](std::size_t i) {
+                         return T(distribution(generator));
+                       });
+}
+
+template <typename T>
+void test_sort_by_type(sycl::queue &q, std::size_t dataSize) {
+  test_sort_by_comp<T, std::less<T>>(q, dataSize);
+  test_sort_by_comp<T, std::greater<T>>(q, dataSize);
+}
+
+int main(int argc, char *argv[]) {
+  sycl::queue q(sycl::default_selector{}, async_handler_);
+  if (!isSupportedDevice(q.get_device())) {
+    std::cout << "Skipping test\n";
+    return 0;
+  }
+
+  std::vector<int> sizes{1, 2, 64, 256, 1024, 2048, 4096};
+
+  for (int i = 0; i < sizes.size(); ++i) {
+    test_sort_by_type<std::int8_t>(q, sizes[i]);
+    test_sort_by_type<std::uint16_t>(q, sizes[i]);
+    test_sort_by_type<std::int32_t>(q, sizes[i]);
+    test_sort_by_type<std::uint32_t>(q, sizes[i]);
+    test_sort_by_type<float>(q, sizes[i]);
+    test_sort_by_type<sycl::half>(q, sizes[i]);
+    test_sort_by_type<double>(q, sizes[i]);
+    test_sort_by_type<std::size_t>(q, sizes[i]);
+  }
+  std::cout << "Test passed." << std::endl;
+}
