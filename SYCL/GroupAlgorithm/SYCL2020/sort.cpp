@@ -3,17 +3,7 @@
 // RUN: %GPU_RUN_PLACEHOLDER %t.out
 // RUN: %ACC_RUN_PLACEHOLDER %t.out
 //
-// Missinsg __spirv_GroupIAdd, __spirv_GroupSMin and __spirv_GroupSMax on AMD:
-// XFAIL: rocm_amd
-
-// TODO: enable compile+runtime checks for operations defined in SPIR-V 1.3.
-// That requires either adding a switch to clang (-spirv-max-version=1.3) or
-// raising the spirv version from 1.1. to 1.3 for spirv translator
-// unconditionally. Using operators specific for spirv 1.3 and higher with
-// -spirv-max-version=1.1 being set by default causes assert/check fails
-// in spirv translator.
-// RUNx: %clangxx -fsycl -fsycl-targets=%sycl_triple -DSPIRV_1_3 %s -I . -o \
-   %t13.out
+// RUNx: %clangxx -fsycl -fsycl-targets=%sycl_triple %s -I . -o %t13.out
 
 #include "support.h"
 #include <CL/sycl.hpp>
@@ -173,7 +163,7 @@ int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
          [=](sycl::nd_item<1> id) {
            auto group_id = id.get_group(0);
            auto ptr_keys = &aI1[group_id * n_items];
-           // auto ptr = aI.get_pointer() + group_id * n_items;
+          //  auto ptr_keys = aI1.get_pointer() + group_id * n_items;
 
            scratch[0] = std::uint8_t{};
            switch (test_case) {
