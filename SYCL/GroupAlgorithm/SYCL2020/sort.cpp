@@ -163,7 +163,7 @@ int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
          [=](sycl::nd_item<1> id) {
            auto group_id = id.get_group(0);
            auto ptr_keys = &aI1[group_id * n_items];
-          //  auto ptr_keys = aI1.get_pointer() + group_id * n_items;
+           //  auto ptr_keys = aI1.get_pointer() + group_id * n_items;
 
            scratch[0] = std::uint8_t{};
            switch (test_case) {
