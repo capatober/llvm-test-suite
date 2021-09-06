@@ -100,13 +100,13 @@ int test_sort_over_group(sycl::queue &q, std::size_t local,
               << std::endl;
   q.submit([&](sycl::handler &h) {
      auto aI1 = sycl::accessor(bufI1, h);
-     sycl::accessor<std::uint8_t, 1, sycl::access_mode::read_write,
+     sycl::accessor<std::byte, 1, sycl::access_mode::read_write,
                     sycl::access::target::local>
          scratch({local_memory_size}, h);
 
      h.parallel_for<sort_over_group_kernel_name<T, Compare>>(
          sycl::nd_range<1>(local_range, local_range), [=](sycl::nd_item<1> id) {
-           scratch[0] = std::uint8_t{};
+           scratch[0] = std::byte{};
            auto local_id = id.get_local_id();
            switch (test_case) {
            case 0:
@@ -154,7 +154,7 @@ int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
               << std::endl;
   q.submit([&](sycl::handler &h) {
      auto aI1 = sycl::accessor(bufI1, h);
-     sycl::accessor<std::uint8_t, 1, sycl::access_mode::read_write,
+     sycl::accessor<std::byte, 1, sycl::access_mode::read_write,
                     sycl::access::target::local>
          scratch({local_memory_size}, h);
 
@@ -163,9 +163,10 @@ int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
          [=](sycl::nd_item<1> id) {
            auto group_id = id.get_group(0);
            auto ptr_keys = &aI1[group_id * n_items];
+           //  Replacing the line above with the line below also works
            //  auto ptr_keys = aI1.get_pointer() + group_id * n_items;
 
-           scratch[0] = std::uint8_t{};
+           scratch[0] = std::byte{};
            switch (test_case) {
            case 0:
              if constexpr (std::is_same_v<Compare, std::less<T>> &&
