@@ -63,6 +63,9 @@ template <typename... Args> class sort_over_group_kernel_name;
 template <typename... Args> class joint_sort_kernel_name;
 template <typename... Args> class custom_sorter_kernel_name;
 
+// this class is needed to pass dimension value to aforementioned classes
+template <int dim> class int_wrapper;
+
 // custom sorter
 template <typename Compare> struct bubble_sorter {
   Compare comp;
@@ -79,14 +82,28 @@ template <typename Compare> struct bubble_sorter {
   }
 };
 
-template <typename T, typename Compare>
+template <int dim> sycl::range<dim> get_range(const std::size_t local);
+
+template <> sycl::range<1> get_range<1>(const std::size_t local) {
+  return sycl::range<1>(local);
+}
+
+template <> sycl::range<2> get_range<2>(const std::size_t local) {
+  return sycl::range<2>(local, 1);
+}
+
+template <> sycl::range<3> get_range<3>(const std::size_t local) {
+  return sycl::range<3>(local, 1, 1);
+}
+
+template <int dim, typename T, typename Compare>
 int test_sort_over_group(sycl::queue &q, std::size_t local,
                          sycl::buffer<T> &bufI1, Compare comp, int test_case) {
   auto n = bufI1.size();
   if (n > local)
     return -1;
 
-  sycl::range<1> local_range(local);
+  sycl::range<dim> local_range = get_range<dim>(local);
 
   std::size_t local_memory_size =
       my_sycl::experimental::default_sorter<>::memory_required<T>(
@@ -104,10 +121,11 @@ int test_sort_over_group(sycl::queue &q, std::size_t local,
                     sycl::access::target::local>
          scratch({local_memory_size}, h);
 
-     h.parallel_for<sort_over_group_kernel_name<T, Compare>>(
-         sycl::nd_range<1>(local_range, local_range), [=](sycl::nd_item<1> id) {
+     h.parallel_for<sort_over_group_kernel_name<int_wrapper<dim>, T, Compare>>(
+         sycl::nd_range<dim>(local_range, local_range),
+         [=](sycl::nd_item<dim> id) {
            scratch[0] = std::byte{};
-           auto local_id = id.get_local_id();
+           auto local_id = id.get_local_linear_id();
            switch (test_case) {
            case 0:
              if constexpr (std::is_same_v<Compare, std::less<T>> &&
@@ -211,11 +229,12 @@ int test_custom_sorter(sycl::queue &q, sycl::buffer<T> &bufI1, Compare comp) {
      auto aI1 = sycl::accessor(bufI1, h);
 
      h.parallel_for<custom_sorter_kernel_name<T, Compare>>(
-         sycl::nd_range<1>({local}, {local}), [=](sycl::nd_item<1> id) {
+         sycl::nd_range<2>({local, 1}, {local, 1}), [=](sycl::nd_item<2> id) {
            auto ptr = aI1.get_pointer();
 
-           my_sycl::joint_sort(id.get_group(), ptr, ptr + n,
-                               bubble_sorter<Compare>{comp, id.get_local_id()});
+           my_sycl::joint_sort(
+               id.get_group(), ptr, ptr + n,
+               bubble_sorter<Compare>{comp, id.get_local_linear_id()});
          });
    }).wait_and_throw();
   return 1;
@@ -238,7 +257,10 @@ void run_sort(sycl::queue &q, std::vector<T> &in, std::size_t size,
     {
       switch (sort_case) {
       case 0:
-        n_groups = test_sort_over_group(q, local, bufKeys, comp, test_case);
+        // this case is just to check the compilation
+        n_groups = test_sort_over_group<1>(q, local, bufKeys, comp, test_case);
+
+        n_groups = test_sort_over_group<2>(q, local, bufKeys, comp, test_case);
         break;
       case 1:
         n_groups = test_joint_sort(q, n_items, local, bufKeys, comp, test_case);
