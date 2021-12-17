@@ -105,9 +105,8 @@ int test_sort_over_group(sycl::queue &q, std::size_t local,
 
   sycl::range<dim> local_range = get_range<dim>(local);
 
-  std::size_t local_memory_size =
-      my_sycl::default_sorter<>::memory_required<T>(
-          sycl::memory_scope::work_group, local_range);
+  std::size_t local_memory_size = my_sycl::default_sorter<>::memory_required<T>(
+      sycl::memory_scope::work_group, local_range);
 
   if (local_memory_size >
       q.get_device().template get_info<sycl::info::device::local_mem_size>())
@@ -161,9 +160,8 @@ int test_joint_sort(sycl::queue &q, std::size_t n_items, std::size_t local,
   auto n = bufI1.size();
   auto n_groups = (n - 1) / n_items + 1;
 
-  std::size_t local_memory_size =
-      my_sycl::default_sorter<>::memory_required<T>(
-          sycl::memory_scope::work_group, n);
+  std::size_t local_memory_size = my_sycl::default_sorter<>::memory_required<T>(
+      sycl::memory_scope::work_group, n);
   if (local_memory_size >
       q.get_device().template get_info<sycl::info::device::local_mem_size>())
     std::cout << "local_memory_size = " << local_memory_size << ", available = "
